@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARIA Assistant HUD</title>
+<style>
+  :root {
+    --bg: #02070d;
+    --glow: #29d8ff;
+    --glow-soft: rgba(41, 216, 255, 0.35);
+    --glow-faint: rgba(41, 216, 255, 0.08);
+    --warn: #ffb547;
+    --alert: #ff4d5e;
+    --text: #bdefff;
+    --muted: #5e8ea3;
+    --font: "Segoe UI", "Roboto Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: radial-gradient(ellipse at center, #06202e 0%, var(--bg) 70%);
+    color: var(--text);
+    font-family: var(--font);
+    overflow: hidden;
+    letter-spacing: 0.06em;
+  }
+  /* scanlines + grid */
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 5;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,0.18) 0 1px, transparent 1px 3px);
+  }
+  #grid { position: fixed; inset: 0; z-index: 0; }
+
+  .hud {
+    position: relative; z-index: 2; height: 100%;
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) minmax(320px, 2fr) minmax(220px, 1fr);
+    grid-template-rows: auto 1fr auto;
+    gap: 16px; padding: 16px;
+  }
+  header, footer { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; }
+  .brand { font-size: 14px; color: var(--glow); text-shadow: 0 0 8px var(--glow); }
+  .brand b { font-size: 22px; letter-spacing: 0.4em; }
+  .clock { text-align: right; }
+  .clock .t { font-size: 28px; color: var(--glow); text-shadow: 0 0 10px var(--glow); }
+  .clock .d { font-size: 12px; color: var(--muted); }
+
+  .panel {
+    position: relative; border: 1px solid var(--glow-soft); background: var(--glow-faint);
+    padding: 14px; clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
+    animation: boot 0.8s ease-out both;
+  }
+  .panel h2 { margin: 0 0 10px; font-size: 11px; font-weight: 600; color: var(--glow); letter-spacing: 0.3em; }
+  .panel h2::before { content: "◢ "; }
+  .col { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+  @keyframes boot { from { opacity: 0; transform: translateY(10px); filter: blur(4px); } to { opacity: 1; transform: none; filter: none; } }
+
+  .stat { margin-bottom: 10px; font-size: 12px; }
+  .stat .row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+  .bar { height: 6px; background: rgba(41,216,255,0.12); position: relative; overflow: hidden; }
+  .bar i { position: absolute; inset: 0 auto 0 0; background: var(--glow); box-shadow: 0 0 8px var(--glow); transition: width 0.8s ease, background 0.4s; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; }
+  .kv span:nth-child(odd) { color: var(--muted); }
+  .kv span:nth-child(even) { text-align: right; }
+
+  /* center reactor */
+  .center { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; }
+  .reactor { width: min(52vh, 100%); aspect-ratio: 1; position: relative; cursor: pointer; }
+  .reactor svg { width: 100%; height: 100%; overflow: visible; }
+  .ring { transform-origin: 250px 250px; }
+  .r1 { animation: spin 22s linear infinite; }
+  .r2 { animation: spin 14s linear infinite reverse; }
+  .r3 { animation: spin 40s linear infinite; }
+  .r4 { animation: spin 8s linear infinite reverse; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .core { filter: drop-shadow(0 0 18px var(--glow)); transition: transform 0.15s; transform-origin: 250px 250px; }
+  .reactor.listening .core { animation: pulse 0.9s ease-in-out infinite; }
+  .reactor.speaking .core { animation: pulse 0.35s ease-in-out infinite; }
+  @keyframes pulse { 50% { transform: scale(1.08); } }
+  .state { margin-top: 10px; font-size: 12px; color: var(--muted); letter-spacing: 0.4em; text-align: center; }
+
+  /* console */
+  .console { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .log { flex: 1; overflow-y: auto; font-size: 12px; line-height: 1.6; padding-right: 4px; }
+  .log p { margin: 0 0 6px; }
+  .log .u { color: var(--warn); }
+  .log .u::before { content: "YOU › "; color: var(--muted); }
+  .log .a::before { content: "ARIA › "; color: var(--muted); }
+  .log .s { color: var(--muted); font-style: italic; }
+  .log::-webkit-scrollbar { width: 4px; } .log::-webkit-scrollbar-thumb { background: var(--glow-soft); }
+  form { display: flex; gap: 8px; margin-top: 10px; }
+  input {
+    flex: 1; background: transparent; border: 1px solid var(--glow-soft); color: var(--text);
+    padding: 8px 10px; font: inherit; font-size: 13px; outline: none;
+  }
+  input:focus { border-color: var(--glow); box-shadow: 0 0 8px var(--glow-soft); }
+  button {
+    background: transparent; border: 1px solid var(--glow); color: var(--glow); font: inherit; font-size: 12px;
+    padding: 8px 12px; cursor: pointer; letter-spacing: 0.2em;
+  }
+  button:hover, button.on { background: var(--glow); color: var(--bg); box-shadow: 0 0 12px var(--glow); }
+
+  .tasks { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+  .tasks li { padding: 5px 0; border-bottom: 1px dashed var(--glow-faint); display: flex; gap: 8px; }
+  .tasks li::before { content: "▸"; color: var(--glow); }
+  .wave { height: 46px; width: 100%; }
+  footer { font-size: 11px; color: var(--muted); }
+  .ticker { overflow: hidden; white-space: nowrap; flex: 1; margin-right: 16px; }
+  .ticker span { display: inline-block; animation: tick 30s linear infinite; padding-left: 100%; }
+  @keyframes tick { to { transform: translateX(-100%); } }
+
+  body.alert { --glow: var(--alert); --glow-soft: rgba(255,77,94,0.35); --glow-faint: rgba(255,77,94,0.08); }
+
+  @media (max-width: 900px) {
+    body { overflow-y: auto; }
+    .hud { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; height: auto; }
+    header { flex-wrap: wrap; gap: 8px; }
+    .brand { font-size: 10px; } .brand b { font-size: 18px; }
+    .clock .t { font-size: 22px; } .ticker span { animation-duration: 18s; }
+    .reactor { width: min(80vw, 360px); }
+    .col.right { order: 3; } .center { order: 1; } .col.left { order: 2; }
+    header { order: 0; } footer { order: 4; }
+    .console { min-height: 320px; }
+  }
+  @media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; } }
+</style>
+</head>
+<body>
+<canvas id="grid"></canvas>
+
+<div class="hud">
+  <header>
+    <div class="brand"><b>A.R.I.A.</b><br>ADAPTIVE RESPONSE INTELLIGENCE ASSISTANT</div>
+    <div class="clock"><div class="t" id="time">--:--:--</div><div class="d" id="date">—</div></div>
+  </header>
+
+  <section class="col left">
+    <div class="panel" style="animation-delay:.1s">
+      <h2>SYSTEM DIAGNOSTICS</h2>
+      <div class="stat"><div class="row"><span>CORE LOAD</span><span id="cpuV">0%</span></div><div class="bar"><i id="cpu"></i></div></div>
+      <div class="stat"><div class="row"><span>PAGE MEMORY</span><span id="memV">0%</span></div><div class="bar"><i id="mem"></i></div></div>
+      <div class="stat"><div class="row"><span>POWER</span><span id="batV">—</span></div><div class="bar"><i id="bat"></i></div></div>
+      <div class="stat"><div class="row"><span>SHIELD INTEGRITY</span><span id="shV">100%</span></div><div class="bar"><i id="sh" style="width:100%"></i></div></div>
+      <div class="s" style="font-size:10px;color:var(--muted)">Core load &amp; shield values are simulated.</div>
+    </div>
+    <div class="panel" style="animation-delay:.25s">
+      <h2>ENVIRONMENT</h2>
+      <div class="kv">
+        <span>LOGICAL CORES</span><span id="cores">—</span>
+        <span>NETWORK</span><span id="net">—</span>
+        <span>DISPLAY</span><span id="disp">—</span>
+        <span>TIMEZONE</span><span id="tz">—</span>
+        <span>UPTIME</span><span id="up">00:00:00</span>
+      </div>
+    </div>
+    <div class="panel" style="animation-delay:.4s">
+      <h2>AUDIO SPECTRUM</h2>
+      <canvas class="wave" id="wave"></canvas>
+    </div>
+  </section>
+
+  <section class="center">
+    <div class="reactor" id="reactor" title="Click to talk">
+      <svg viewBox="0 0 500 500" aria-hidden="true">
+        <defs>
+          <radialGradient id="cg"><stop offset="0" stop-color="#fff"/><stop offset=".35" stop-color="var(--glow)"/><stop offset="1" stop-color="var(--glow)" stop-opacity="0"/></radialGradient>
+        </defs>
+        <g class="ring r3" fill="none" stroke="var(--glow)" stroke-opacity=".25">
+          <circle cx="250" cy="250" r="235" stroke-dasharray="2 8"/>
+          <circle cx="250" cy="250" r="220"/>
+        </g>
+        <g class="ring r1" fill="none" stroke="var(--glow)" stroke-width="6" stroke-opacity=".7">
+          <circle cx="250" cy="250" r="195" stroke-dasharray="120 60 30 60" />
+        </g>
+        <g class="ring r2" fill="none" stroke="var(--glow)" stroke-width="14" stroke-opacity=".35">
+          <circle cx="250" cy="250" r="160" stroke-dasharray="4 10"/>
+        </g>
+        <g class="ring r4" fill="none" stroke="var(--glow)" stroke-width="3">
+          <path d="M250 120 A130 130 0 0 1 380 250" />
+          <path d="M250 380 A130 130 0 0 1 120 250" />
+        </g>
+        <g id="ticks" stroke="var(--glow)" stroke-opacity=".6"></g>
+        <g class="core">
+          <circle cx="250" cy="250" r="95" fill="url(#cg)" opacity=".55"/>
+          <circle cx="250" cy="250" r="62" fill="none" stroke="var(--glow)" stroke-width="2"/>
+          <polygon points="250,200 293,275 207,275" fill="none" stroke="#fff" stroke-width="3" />
+          <circle cx="250" cy="250" r="22" fill="#e9fbff"/>
+        </g>
+      </svg>
+    </div>
+    <div class="state" id="state">STANDBY · CLICK CORE OR TYPE A COMMAND</div>
+  </section>
+
+  <section class="col right">
+    <div class="panel console" style="animation-delay:.2s">
+      <h2>COMMAND INTERFACE</h2>
+      <div class="log" id="log" aria-live="polite"></div>
+      <form id="form">
+        <input id="cmd" autocomplete="off" placeholder="Try: help, status, add task …" aria-label="Command">
+        <button type="button" id="mic" title="Voice input">MIC</button>
+      </form>
+    </div>
+    <div class="panel" style="animation-delay:.35s">
+      <h2>ACTIVE DIRECTIVES</h2>
+      <ul class="tasks" id="tasks"></ul>
+    </div>
+  </section>
+
+  <footer>
+    <div class="ticker"><span id="ticker">ALL SYSTEMS NOMINAL · VOICE MODULE READY · TYPE "HELP" FOR AVAILABLE COMMANDS · </span></div>
+    <div>v1.0 · LOCAL MODE</div>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const start = Date.now();
+  let voiceOn = true;
+
+  // ---------- background grid ----------
+  const g = $('grid'), gc = g.getContext('2d');
+  function drawGrid() {
+    g.width = innerWidth; g.height = innerHeight;
+    gc.strokeStyle = 'rgba(41,216,255,0.05)';
+    for (let x = 0; x < g.width; x += 40) { gc.beginPath(); gc.moveTo(x, 0); gc.lineTo(x, g.height); gc.stroke(); }
+    for (let y = 0; y < g.height; y += 40) { gc.beginPath(); gc.moveTo(0, y); gc.lineTo(g.width, y); gc.stroke(); }
+  }
+  addEventListener('resize', drawGrid); drawGrid();
+
+  // ---------- reactor tick marks ----------
+  const ticks = $('ticks');
+  for (let i = 0; i < 72; i++) {
+    const a = i * 5 * Math.PI / 180, r1 = 205, r2 = i % 6 ? 212 : 222;
+    const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    l.setAttribute('x1', 250 + r1 * Math.cos(a)); l.setAttribute('y1', 250 + r1 * Math.sin(a));
+    l.setAttribute('x2', 250 + r2 * Math.cos(a)); l.setAttribute('y2', 250 + r2 * Math.sin(a));
+    ticks.appendChild(l);
+  }
+
+  // ---------- clock + uptime ----------
+  const pad = n => String(n).padStart(2, '0');
+  function clock() {
+    const d = new Date();
+    $('time').textContent = d.toLocaleTimeString([], { hour12: false });
+    $('date').textContent = d.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }).toUpperCase();
+    const s = Math.floor((Date.now() - start) / 1000);
+    $('up').textContent = `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
+  }
+  setInterval(clock, 1000); clock();
+
+  // ---------- environment (real browser data where available) ----------
+  $('cores').textContent = navigator.hardwareConcurrency || 'N/A';
+  $('disp').textContent = `${screen.width}×${screen.height}`;
+  $('tz').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const conn = navigator.connection;
+  const netText = () => navigator.onLine ? (conn && conn.effectiveType ? `ONLINE · ${conn.effectiveType.toUpperCase()}` : 'ONLINE') : 'OFFLINE';
+  $('net').textContent = netText();
+  addEventListener('online', () => $('net').textContent = netText());
+  addEventListener('offline', () => $('net').textContent = netText());
+
+  function setBar(id, pct, highIsGood = false) {
+    pct = Math.max(0, Math.min(100, pct));
+    $(id).style.width = pct + '%';
+    $(id + 'V').textContent = Math.round(pct) + '%';
+    const bad = highIsGood ? 100 - pct : pct;
+    $(id).style.background = bad > 85 ? 'var(--alert)' : bad > 65 ? 'var(--warn)' : 'var(--glow)';
+  }
+  let battery = null;
+  if (navigator.getBattery) navigator.getBattery().then(b => {
+    battery = b;
+    const upd = () => { setBar('bat', b.level * 100, true); $('batV').textContent = Math.round(b.level * 100) + '%' + (b.charging ? ' ⚡' : ''); };
+    b.addEventListener('levelchange', upd); b.addEventListener('chargingchange', upd); upd();
+  }); else $('batV').textContent = 'N/A';
+
+  let cpu = 30;
+  function stats() {
+    cpu += (Math.random() - 0.5) * 18; cpu = Math.max(8, Math.min(92, cpu));
+    setBar('cpu', cpu);
+    const m = performance.memory;
+    setBar('mem', m ? (m.usedJSHeapSize / m.jsHeapSizeLimit) * 100 : 40 + Math.random() * 10);
+  }
+  setInterval(stats, 1500); stats();
+
+  // ---------- audio spectrum (animated; reacts to mic/speech state) ----------
+  const w = $('wave'), wc = w.getContext('2d');
+  let energy = 0.2;
+  function wave(t) {
+    w.width = w.clientWidth * devicePixelRatio; w.height = w.clientHeight * devicePixelRatio;
+    const n = 48, bw = w.width / n;
+    const glow = getComputedStyle(document.body).getPropertyValue('--glow').trim();
+    wc.fillStyle = glow;
+    const target = reactor.classList.contains('speaking') ? 0.9 : reactor.classList.contains('listening') ? 0.6 : 0.15;
+    energy += (target - energy) * 0.05;
+    for (let i = 0; i < n; i++) {
+      const h = (Math.sin(t / 180 + i * 0.6) * 0.5 + 0.5) * (Math.random() * 0.5 + 0.5) * energy * w.height;
+      wc.fillRect(i * bw + 1, (w.height - h) / 2, bw - 2, Math.max(2, h));
+    }
+    requestAnimationFrame(wave);
+  }
+
+  // ---------- console ----------
+  const log = $('log'), reactor = $('reactor'), stateEl = $('state');
+  requestAnimationFrame(wave);
+  function print(text, cls = 'a') {
+    const p = document.createElement('p'); p.className = cls; log.appendChild(p);
+    if (cls !== 'a') { p.textContent = text; log.scrollTop = log.scrollHeight; return; }
+    let i = 0; const iv = setInterval(() => { p.textContent = text.slice(0, ++i); log.scrollTop = log.scrollHeight; if (i >= text.length) clearInterval(iv); }, 14);
+  }
+  function setState(s) { stateEl.textContent = s; }
+
+  const synth = window.speechSynthesis;
+  function say(text) {
+    print(text);
+    if (!voiceOn || !synth) return;
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    const v = synth.getVoices().find(v => /en-GB/i.test(v.lang) && /male|daniel|george|arthur/i.test(v.name)) || synth.getVoices().find(v => /en-GB/i.test(v.lang));
+    if (v) u.voice = v;
+    u.rate = 1.02; u.pitch = 0.9;
+    u.onstart = () => { reactor.classList.add('speaking'); setState('RESPONDING'); };
+    u.onend = () => { reactor.classList.remove('speaking'); setState('STANDBY'); };
+    synth.speak(u);
+  }
+
+  // directives (saved in this browser only)
+  let tasks = [];
+  try { tasks = JSON.parse(localStorage.getItem('aria.tasks')) || []; } catch {}
+  function saveTasks() { try { localStorage.setItem('aria.tasks', JSON.stringify(tasks)); } catch {} renderTasks(); }
+  function renderTasks() {
+    $('tasks').innerHTML = '';
+    if (!tasks.length) { const li = document.createElement('li'); li.textContent = 'No active directives.'; li.style.color = 'var(--muted)'; $('tasks').appendChild(li); return; }
+    tasks.forEach((t, i) => { const li = document.createElement('li'); li.textContent = `${i + 1}. ${t}`; $('tasks').appendChild(li); });
+  }
+  renderTasks();
+
+  const greet = () => { const h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; };
+
+  const commands = [
+    { re: /^(help|commands|what can you do)/, fn: () => say('Available commands: time, date, status, add task followed by text, list tasks, complete task followed by a number, clear tasks, timer followed by minutes, search followed by a query, alert mode, stand down, mute, unmute, clear.') },
+    { re: /^(hi|hello|hey)\b/, fn: () => say(`${greet()}. All systems are online. How can I help?`) },
+    { re: /time/, fn: () => say(`It is ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`) },
+    { re: /date|today/, fn: () => say(`Today is ${new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}.`) },
+    { re: /status|diagnostic|report/, fn: () => {
+        const b = battery ? ` Power at ${Math.round(battery.level * 100)} percent${battery.charging ? ', charging' : ''}.` : '';
+        say(`Systems nominal. Simulated core load at ${Math.round(cpu)} percent. Network ${navigator.onLine ? 'online' : 'offline'}.${b} ${tasks.length} active directive${tasks.length === 1 ? '' : 's'}.`);
+      } },
+    { re: /^(add|new) (task|directive) (.+)/, fn: m => { tasks.push(m[3]); saveTasks(); say(`Directive added: ${m[3]}.`); } },
+    { re: /^(list|show) (tasks|directives)/, fn: () => say(tasks.length ? tasks.map((t, i) => `${i + 1}, ${t}`).join('. ') + '.' : 'You have no active directives.') },
+    { re: /^(complete|done|remove) (task|directive) (\d+)/, fn: m => { const i = +m[3] - 1; if (tasks[i]) { const t = tasks.splice(i, 1)[0]; saveTasks(); say(`Marked complete: ${t}.`); } else say('No directive with that number.'); } },
+    { re: /^clear (tasks|directives)/, fn: () => { tasks = []; saveTasks(); say('All directives cleared.'); } },
+    { re: /^(timer|remind me in) (\d+)/, fn: m => { const n = +m[2]; say(`Timer set for ${n} minute${n === 1 ? '' : 's'}.`); setTimeout(() => say(`Your ${n} minute timer is complete.`), n * 60000); } },
+    { re: /^(search|look up|google) (.+)/, fn: m => { say(`Opening a search for ${m[2]}.`); window.open('https://www.google.com/search?q=' + encodeURIComponent(m[2]), '_blank', 'noopener'); } },
+    { re: /alert|red mode|battle/, fn: () => { document.body.classList.add('alert'); $('ticker').textContent = 'ALERT MODE ENGAGED · ALL SYSTEMS AT READINESS · '; say('Alert mode engaged.'); } },
+    { re: /stand down|calm|normal mode/, fn: () => { document.body.classList.remove('alert'); $('ticker').textContent = 'ALL SYSTEMS NOMINAL · VOICE MODULE READY · TYPE "HELP" FOR AVAILABLE COMMANDS · '; say('Standing down. Returning to normal operations.'); } },
+    { re: /^mute/, fn: () => { voiceOn = false; synth && synth.cancel(); print('Voice output muted.'); } },
+    { re: /^unmute/, fn: () => { voiceOn = true; say('Voice output restored.'); } },
+    { re: /^clear$/, fn: () => { log.innerHTML = ''; } },
+    { re: /thank/, fn: () => say('Always a pleasure.') },
+    { re: /who are you|your name/, fn: () => say('I am ARIA, your adaptive response intelligence assistant. This build runs entirely in your browser.') },
+  ];
+
+  function handle(raw) {
+    const text = raw.trim(); if (!text) return;
+    print(text, 'u');
+    const q = text.replace(/^(hey )?aria[, ]*/i, '').replace(/[?.!]+$/, '');
+    for (const c of commands) { const m = q.match(new RegExp(c.re.source, 'i')); if (m) return c.fn(m); }
+    say(`I don't have a protocol for "${text}" yet. Say help for a list of commands.`);
+  }
+
+  $('form').addEventListener('submit', e => { e.preventDefault(); handle($('cmd').value); $('cmd').value = ''; });
+
+  // ---------- voice input ----------
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null, listening = false;
+  if (SR) {
+    rec = new SR(); rec.lang = 'en-US'; rec.interimResults = false;
+    rec.onresult = e => handle(e.results[0][0].transcript);
+    rec.onend = () => { listening = false; reactor.classList.remove('listening'); $('mic').classList.remove('on'); if (!reactor.classList.contains('speaking')) setState('STANDBY'); };
+    rec.onerror = e => print(`Voice input error: ${e.error}`, 's');
+  }
+  function toggleMic() {
+    if (!rec) { print('Voice input is not supported in this browser. Try Chrome or Edge, or type a command.', 's'); return; }
+    if (listening) return rec.stop();
+    synth && synth.cancel();
+    listening = true; reactor.classList.add('listening'); $('mic').classList.add('on'); setState('LISTENING …');
+    rec.start();
+  }
+  $('mic').addEventListener('click', toggleMic);
+  reactor.addEventListener('click', toggleMic);
+
+  // ---------- boot sequence ----------
+  const boot = ['Initializing core systems …', 'Calibrating display matrix …', 'Voice module online.'];
+  boot.forEach((l, i) => setTimeout(() => print(l, 's'), 300 + i * 450));
+  setTimeout(() => print(`${greet()}. ARIA is online. Type "help" or click the core to speak.`), 300 + boot.length * 450);
+})();
+</script>
+</body>
+</html>
